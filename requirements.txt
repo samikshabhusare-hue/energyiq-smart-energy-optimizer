@@ -1,0 +1,15 @@
+# EnergyIQ — Smart Energy Consumption Optimizer
+# External Dependencies
+
+# Web Application & Dashboard
+streamlit>=1.30.0
+
+# Data Manipulation & Numerics
+pandas>=2.0.0
+numpy>=1.24.0
+
+# Interactive Charting & Data Visualizations
+plotly>=5.18.0
+
+# Testing Framework
+pytest>=7.4.0
