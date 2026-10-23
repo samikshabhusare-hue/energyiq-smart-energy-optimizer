@@ -1067,3 +1067,10 @@ def test_metric_rules_without_anomaly_dataframe(anomalies):
     recs = recommendations.generate_recommendations(_peak_metrics(), anomalies)
     assert any(r['category'] == 'Peak Demand' for r in recs)
     assert not any(r['category'] == 'Anomaly' for r in recs)
+
+
+@pytest.mark.parametrize('value', [float('inf'), float('-inf'), 'invalid'])
+def test_nonfinite_summary_values_are_ignored(value):
+    metrics = _high_consumption_metrics()
+    metrics['summary']['average_interval_kwh'] = value
+    assert recommendations.generate_recommendations(metrics, pd.DataFrame()) == []
