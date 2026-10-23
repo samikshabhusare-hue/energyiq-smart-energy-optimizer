@@ -1052,3 +1052,11 @@ def test_anomaly_zones_are_independent():
     recs = recommendations.generate_recommendations({}, anomalies)
     assert [(r['evidence']['zone'], r['priority']) for r in recs] == [('Zone 1', 'High'), ('Zone 2', 'Medium')]
     assert all(r['evidence']['flagged_reading_count'] == 1 for r in recs)
+
+
+def test_invalid_anomaly_timestamp_is_omitted():
+    anomalies = _anomaly_row()
+    anomalies['timestamp'] = 'invalid'
+    rec = recommendations.generate_recommendations({}, anomalies)[0]
+    assert 'worst_timestamp' not in rec['evidence']
+    assert 'invalid' not in rec['description']
