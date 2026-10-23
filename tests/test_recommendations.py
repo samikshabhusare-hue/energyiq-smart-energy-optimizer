@@ -1080,3 +1080,9 @@ def test_off_peak_requires_daytime_data():
     metrics = _empty_metrics()
     metrics['hourly'] = pd.DataFrame({'hour': [0, 1], 'average_energy_kwh': [4, 5]})
     assert recommendations.generate_recommendations(metrics, pd.DataFrame()) == []
+
+
+def test_zero_daytime_does_not_trigger_off_peak():
+    metrics = _off_peak_metrics(off_peak_avg=4, daytime_avg=0)
+    recs = recommendations.generate_recommendations(metrics, pd.DataFrame())
+    assert not any(r['category'] == 'Off-Peak Baseline' for r in recs)
