@@ -1060,3 +1060,10 @@ def test_invalid_anomaly_timestamp_is_omitted():
     rec = recommendations.generate_recommendations({}, anomalies)[0]
     assert 'worst_timestamp' not in rec['evidence']
     assert 'invalid' not in rec['description']
+
+
+@pytest.mark.parametrize('anomalies', [None, [], {}])
+def test_metric_rules_without_anomaly_dataframe(anomalies):
+    recs = recommendations.generate_recommendations(_peak_metrics(), anomalies)
+    assert any(r['category'] == 'Peak Demand' for r in recs)
+    assert not any(r['category'] == 'Anomaly' for r in recs)
