@@ -34,6 +34,7 @@ import plotly.graph_objects as go
 import streamlit as st
 
 from analytics import calculate_metrics, detect_anomalies, load_and_validate_data
+from recommendations import generate_recommendations
 
 
 # =============================================================================
@@ -722,74 +723,95 @@ def render_kpi_cards(metrics: dict[str, Any], anomalies_df: pd.DataFrame) -> Non
 # 6. Chart Builders
 # =============================================================================
 def build_timeseries_chart(anomalies_df: pd.DataFrame) -> go.Figure:
-    """Build energy consumption trend line chart with smooth curves, visible markers, and anomaly points."""
+    """Build energy consumption trend line chart with linear interpolation and zone safety."""
     fig = go.Figure()
+    if anomalies_df.empty:
+        return style_plotly_chart(fig)
 
-    # Glowing teal line with smooth spline curves and visible markers
-    fig.add_trace(
-        go.Scatter(
-            x=anomalies_df["timestamp"],
-            y=anomalies_df["energy_kwh"],
-            mode="lines+markers",
-            name="Actual Consumption",
-            line=dict(color="#14D6A5", width=2.5, shape="spline"),
-            marker=dict(size=5, color="#14D6A5", line=dict(width=1, color="#FFFFFF")),
-            hovertemplate="<b>%{x|%b %d, %Y %H:%M}</b><br>Measured: <b>%{y:.2f} kWh</b><extra></extra>",
-        )
-    )
+    zones = sorted(anomalies_df["zone"].dropna().unique().tolist())
+    is_multi_zone = len(zones) > 1
 
-    # Diurnal expected baseline (dashed purple)
-    baseline_subset = anomalies_df[anomalies_df["expected_baseline_kwh"].notna()]
-    if not baseline_subset.empty:
+    zone_palette = {
+        "Zone 1": "#14D6A5",
+        "Zone 2": "#3B82F6",
+        "Zone 3": "#8B5CF6",
+        "Block A": "#14D6A5",
+        "All": "#14D6A5",
+    }
+    fallback_colors = ["#14D6A5", "#3B82F6", "#8B5CF6", "#F59E0B", "#EC4899", "#06B6D4"]
+
+    # When multiple zones exist, plot each zone series independently to avoid connecting different zones
+    for i, z in enumerate(zones):
+        z_df = anomalies_df[anomalies_df["zone"] == z].sort_values("timestamp")
+        color = zone_palette.get(z, fallback_colors[i % len(fallback_colors)])
+        # Use lines without markers for large datasets to guarantee high browser performance
+        plot_mode = "lines" if len(z_df) > 500 else "lines+markers"
+
         fig.add_trace(
             go.Scatter(
-                x=baseline_subset["timestamp"],
-                y=baseline_subset["expected_baseline_kwh"],
-                mode="lines",
-                name="Diurnal Expected Baseline",
-                line=dict(color="#A855F7", width=1.8, dash="dash", shape="spline"),
-                hovertemplate="<b>%{x|%b %d, %Y %H:%M}</b><br>Baseline: <b>%{y:.2f} kWh</b><extra></extra>",
+                x=z_df["timestamp"],
+                y=z_df["energy_kwh"],
+                mode=plot_mode,
+                name=f"{z}" if is_multi_zone else "Actual Consumption",
+                line=dict(color=color, width=2.2, shape="linear"),
+                marker=dict(size=4, color=color) if plot_mode == "lines+markers" else None,
+                hovertemplate=f"<b>{html.escape(z)}</b><br>%{{x|%b %d, %Y %H:%M}}<br>Demand: <b>%{{y:.2f}} kWh</b><extra></extra>",
             )
         )
 
-    # Highlighted anomaly points with glowing ruby markers
+    # If single-zone, render the expected diurnal baseline trace
+    if not is_multi_zone:
+        baseline_subset = anomalies_df[anomalies_df["expected_baseline_kwh"].notna()].sort_values("timestamp")
+        if not baseline_subset.empty:
+            fig.add_trace(
+                go.Scatter(
+                    x=baseline_subset["timestamp"],
+                    y=baseline_subset["expected_baseline_kwh"],
+                    mode="lines",
+                    name="Diurnal Baseline",
+                    line=dict(color="#A855F7", width=1.8, dash="dash", shape="linear"),
+                    hovertemplate="<b>Baseline</b><br>%{x|%b %d, %Y %H:%M}<br>Expected: <b>%{y:.2f} kWh</b><extra></extra>",
+                )
+            )
+
+    # Highlight anomalies with visible markers (cap at top 300 to maintain browser fluidity on large ranges)
     anomalies_subset = anomalies_df[anomalies_df["anomaly_flag"] == True]
     if not anomalies_subset.empty:
+        if len(anomalies_subset) > 300:
+            anomalies_subset = anomalies_subset.nlargest(300, "deviation_kwh")
+
         fig.add_trace(
             go.Scatter(
                 x=anomalies_subset["timestamp"],
                 y=anomalies_subset["energy_kwh"],
                 mode="markers",
-                name="Critical Anomaly (>3× MAD)",
+                name="Critical Anomalies",
                 marker=dict(
                     color="#EF4444",
-                    size=12,
-                    symbol="circle-open-dot",
-                    line=dict(color="#DC2626", width=3),
+                    size=8,
+                    symbol="circle-open",
+                    line=dict(color="#EF4444", width=2),
                 ),
                 hovertemplate=(
-                    "<b>⚠️ CRITICAL ANOMALY DETECTED</b><br>"
+                    "<b>⚠️ ANOMALY DETECTED</b><br>"
                     "Timestamp: <b>%{x|%b %d, %Y %H:%M}</b><br>"
                     "Measured: <b>%{y:.2f} kWh</b><br>"
-                    "Baseline: <b>"
-                    + anomalies_subset["expected_baseline_kwh"].map(lambda v: f"{v:.2f} kWh" if pd.notna(v) else "N/A")
-                    + "</b><br>"
-                    "Surge: <b>+"
-                    + anomalies_subset["deviation_kwh"].map(lambda v: f"{v:.2f} kWh" if pd.notna(v) else "N/A")
-                    + "</b><extra></extra>"
+                    "Zone: <b>%{text}</b><extra></extra>"
                 ),
+                text=anomalies_subset["zone"],
             )
         )
 
     fig.update_layout(
         height=430,
-        hovermode="x unified",
+        hovermode="x unified" if not is_multi_zone else "closest",
         xaxis=dict(
             title="Measurement Timestamp",
             rangeselector=dict(
                 buttons=list([
                     dict(count=1, label="1D", step="day", stepmode="backward"),
-                    dict(count=2, label="2D", step="day", stepmode="backward"),
+                    dict(count=3, label="3D", step="day", stepmode="backward"),
+                    dict(count=7, label="7D", step="day", stepmode="backward"),
                     dict(step="all", label="ALL"),
                 ]),
                 bgcolor="#132247",
@@ -1012,21 +1034,27 @@ def main() -> None:
     min_csv_date = df_clean["timestamp"].min().date()
     max_csv_date = df_clean["timestamp"].max().date()
 
+    # Initial default view: Most recent 7 days for immediate responsiveness, full date boundaries selectable
+    default_start_date = max(min_csv_date, max_csv_date - pd.Timedelta(days=7))
+
     date_filter = st.sidebar.date_input(
         "Date Range",
-        value=(min_csv_date, max_csv_date),
+        value=(default_start_date, max_csv_date),
         min_value=min_csv_date,
         max_value=max_csv_date,
-        help="Filter interval readings between selected dates.",
+        help="Filter interval readings between selected dates. Initial view defaults to recent 7 days for fast responsiveness.",
     )
 
     filtered_df = df_clean.copy()
-    if isinstance(date_filter, (list, tuple)) and len(date_filter) == 2:
-        start_date, end_date = date_filter[0], date_filter[1]
-        filtered_df = filtered_df[
-            (filtered_df["timestamp"].dt.date >= start_date)
-            & (filtered_df["timestamp"].dt.date <= end_date)
-        ].copy()
+    if isinstance(date_filter, (list, tuple)):
+        if len(date_filter) == 2:
+            start_date, end_date = date_filter[0], date_filter[1]
+            filtered_df = filtered_df[
+                (filtered_df["timestamp"].dt.date >= start_date)
+                & (filtered_df["timestamp"].dt.date <= end_date)
+            ].copy()
+        elif len(date_filter) == 1:
+            st.sidebar.caption("ℹ️ Click an end date to complete the range filter.")
 
     # Zone Filter
     available_zones = sorted(df_clean["zone"].dropna().unique().tolist())
@@ -1040,15 +1068,15 @@ def main() -> None:
         if selected_zones:
             filtered_df = filtered_df[filtered_df["zone"].isin(selected_zones)].copy()
         else:
-            st.sidebar.warning("Select at least one zone to view analytics.")
-            st.stop()
+            filtered_df = filtered_df.iloc[0:0].copy()
+            st.sidebar.warning("⚠️ Select at least one zone to view analytics.")
 
     filtered_df.attrs["data_quality_warnings"] = df_clean.attrs.get("data_quality_warnings", [])
     filtered_df.attrs["interval_note"] = df_clean.attrs.get("interval_note", "")
 
     if filtered_df.empty:
-        st.warning("No records found matching the active date and zone filters.")
-        st.stop()
+        st.warning("⚠️ No records match the active date and zone filters. Please broaden your selection in the sidebar.")
+        return
 
     # --- Sidebar Compact Data-Summary Card ---
     summary_rows_count = len(filtered_df)
@@ -1242,10 +1270,11 @@ def main() -> None:
         csv_export_data["timestamp"] = csv_export_data["timestamp"].dt.strftime("%Y-%m-%d %H:%M:%S")
         csv_bytes = csv_export_data.to_csv(index=False).encode("utf-8")
 
-        col_tbl_left, col_tbl_right = st.columns([4, 1])
+        total_flagged = len(evidence_df)
+        col_tbl_left, col_tbl_right = st.columns([3.5, 1.5])
         with col_tbl_right:
             st.download_button(
-                label="📥 Download Audit CSV",
+                label=f"📥 Download Full Audit CSV ({total_flagged:,} events)",
                 data=csv_bytes,
                 file_name="energyiq_anomaly_audit.csv",
                 mime="text/csv",
@@ -1253,7 +1282,8 @@ def main() -> None:
                 help="Download the complete anomaly audit table with baselines and deviations.",
             )
 
-        evidence_display = evidence_df.copy()
+        # Limit visible interactive table to top 100 rows to ensure snappy UI responsiveness
+        evidence_display = evidence_df.head(100).copy()
         evidence_display["timestamp"] = evidence_display["timestamp"].dt.strftime("%Y-%m-%d %H:%M")
         evidence_display = evidence_display.rename(
             columns={
@@ -1280,11 +1310,19 @@ def main() -> None:
             hide_index=True,
         )
 
-        st.caption(
-            f"ℹ️ Outlier Flag Criterion: Flagged when |Measured − Baseline| &gt; "
-            f"max(3 × 1.4826 × MAD, {param_threshold_kwh:.1f} kWh). "
-            "Historical baselines are causal (shift=1) to prevent lookahead bias or self-contamination."
-        )
+        if total_flagged > 100:
+            st.caption(
+                f"ℹ️ Displaying top 100 of {total_flagged:,} flagged outliers (ranked by highest surge). "
+                f"Outlier Flag Criterion: Flagged when |Measured − Baseline| &gt; "
+                f"max(3 × 1.4826 × MAD, {param_threshold_kwh:.1f} kWh). "
+                "Download the complete audit CSV above for all interval records."
+            )
+        else:
+            st.caption(
+                f"ℹ️ Outlier Flag Criterion: Flagged when |Measured − Baseline| &gt; "
+                f"max(3 × 1.4826 × MAD, {param_threshold_kwh:.1f} kWh). "
+                "Historical baselines are causal (shift=1) to prevent lookahead bias or self-contamination."
+            )
     else:
         st.markdown(
             """
@@ -1360,36 +1398,69 @@ def main() -> None:
         )
 
     with col_bot_right:
-        # =====================================================================
-        # INTEGRATION POINT: Recommendation Engine
-        # ---------------------------------------------------------------------
-        # When recommendations.py is delivered by Mrunal, wire it directly here:
-        #
-        # try:
-        #     from recommendations import generate_recommendations
-        #     recommendations = generate_recommendations(
-        #         df=filtered_df,
-        #         metrics=metrics,
-        #         anomalies=anomalies_df,
-        #     )
-        #     for rec in recommendations:
-        #         st.info(rec.text)
-        # except ImportError:
-        #     pass
-        # =====================================================================
         st.markdown(
             """
-            <div class="integration-callout">
-                <div class="integration-head">
-                    <span>💡</span> AI Efficiency Recommendations Engine (Integration Ready)
-                </div>
-                <p class="integration-desc">
-                    <strong>Architecture Hand-off Point:</strong> Telemetry summaries, diurnal profile arrays, and the anomaly evidence dataset are computed and pre-formatted for direct ingestion by <code>recommendations.py</code>. Once teammate Mrunal delivers the recommendation module, automated energy conservation measures (ECMs) and schedule optimization insights will appear here in real time.
-                </p>
+            <div class="glass-panel">
+                <div class="glass-panel-title"><span>💡</span> AI Energy Optimization Recommendations</div>
+                <div class="glass-panel-subtitle">Rule-driven, data-backed energy conservation measures derived from telemetry patterns.</div>
             </div>
             """,
             unsafe_allow_html=True,
         )
+
+        try:
+            raw_recs = generate_recommendations(metrics, anomalies_df)
+        except Exception as exc:
+            raw_recs = []
+            st.caption(f"Recommendation engine note: {exc}")
+
+        # Confirm returned dictionary keys before displaying
+        valid_recs = [
+            r for r in raw_recs
+            if isinstance(r, dict) and "title" in r and "description" in r
+        ]
+
+        if valid_recs:
+            for rec in valid_recs:
+                priority = str(rec.get("priority", "Medium")).capitalize()
+                category = str(rec.get("category", "Operational"))
+                title = str(rec.get("title", "Recommendation"))
+                desc = str(rec.get("description", ""))
+
+                if priority == "High":
+                    accent_color = "#EF4444"
+                    badge_style = "background: rgba(239, 68, 68, 0.2); color: #FCA5A5; border: 1px solid rgba(239, 68, 68, 0.4);"
+                    icon = "🔴"
+                elif priority == "Medium":
+                    accent_color = "#F59E0B"
+                    badge_style = "background: rgba(245, 158, 11, 0.2); color: #FCD34D; border: 1px solid rgba(245, 158, 11, 0.4);"
+                    icon = "🟠"
+                else:
+                    accent_color = "#3B82F6"
+                    badge_style = "background: rgba(59, 130, 246, 0.2); color: #93C5FD; border: 1px solid rgba(59, 130, 246, 0.4);"
+                    icon = "🔵"
+
+                st.markdown(
+                    f"""
+                    <div style="background: #0E172E; border: 1px solid rgba(255, 255, 255, 0.08); border-left: 4px solid {accent_color}; border-radius: 10px; padding: 14px 16px; margin-bottom: 12px;">
+                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+                            <span style="font-weight: 700; color: #FFFFFF; font-size: 0.88rem;">{icon} {html.escape(title)}</span>
+                            <span style="padding: 2px 8px; border-radius: 4px; font-size: 0.68rem; font-weight: 700; text-transform: uppercase; {badge_style}">{html.escape(priority)} • {html.escape(category)}</span>
+                        </div>
+                        <p style="color: #94A3B8; font-size: 0.8rem; margin: 0; line-height: 1.45;">{html.escape(desc)}</p>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+        else:
+            st.markdown(
+                """
+                <div class="quality-strip quality-clean">
+                    <span style="font-weight: 600;">✓ Optimization Normalcy: No critical efficiency anomalies or schedule conservation actions flagged for active telemetry window.</span>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
 
     # --- Footer ---
     st.markdown(
