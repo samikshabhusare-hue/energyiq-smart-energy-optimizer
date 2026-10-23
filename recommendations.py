@@ -40,7 +40,7 @@ import pandas as pd
 # Rule 1 – Peak Demand
 # How many of the top hours to inspect.
 PEAK_TOP_N: int = 3
-# A peak hour must exceed the overall average by at least this fraction (20 %).
+# A peak hour must exceed the overall average by strictly more than 20%.
 PEAK_EXCESS_RATIO: float = 0.20
 
 # Rule 2 – Anomaly
@@ -119,7 +119,7 @@ def _rule_peak_demand(metrics: dict[str, Any]) -> list[dict[str, Any]]:
     """Rule 1 – Peak Demand.
 
     Identify the top-N hours by average consumption.  For each that exceeds
-    the overall average by at least PEAK_EXCESS_RATIO, emit a recommendation.
+    the overall average by more than PEAK_EXCESS_RATIO, emit a recommendation.
     Only one recommendation is returned (covering all qualifying peak hours)
     to avoid duplication.
     """

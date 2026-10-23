@@ -1010,3 +1010,9 @@ def test_rules_do_not_mutate_inputs():
         pd.testing.assert_frame_equal(metrics[key], original[key])
     assert metrics["summary"] == original["summary"]
     pd.testing.assert_frame_equal(anomalies, original_anomalies)
+
+
+def test_peak_threshold_equality():
+    metrics = _peak_metrics(overall_avg=10, peak_avg=10 * (1 + PEAK_EXCESS_RATIO))
+    recs = recommendations.generate_recommendations(metrics, pd.DataFrame())
+    assert not any(r['category'] == 'Peak Demand' for r in recs)
