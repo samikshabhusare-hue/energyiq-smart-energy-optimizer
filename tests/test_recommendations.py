@@ -1036,3 +1036,9 @@ def test_peak_hours_limited_to_top_three():
     recs = recommendations.generate_recommendations(metrics, pd.DataFrame())
     evidence = next(r['evidence'] for r in recs if r['category'] == 'Peak Demand')
     assert [row['hour'] for row in evidence['qualifying_peak_hours']] == [4, 3, 2]
+
+
+def test_equal_priority_order_is_stable():
+    recs = recommendations.generate_recommendations(_peak_metrics(), _anomaly_row())
+    high_categories = [r['category'] for r in recs if r['priority'] == 'High']
+    assert high_categories == ['Peak Demand', 'Anomaly']
