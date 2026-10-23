@@ -1022,3 +1022,9 @@ def test_zone_threshold_equality():
     metrics = _two_zone_metrics(high_avg=3, low_avg=2)
     recs = recommendations.generate_recommendations(metrics, pd.DataFrame())
     assert not any(r['category'] == 'Zone Imbalance' for r in recs)
+
+
+def test_off_peak_threshold_equality():
+    metrics = _off_peak_metrics(off_peak_avg=2, daytime_avg=10)
+    recs = recommendations.generate_recommendations(metrics, pd.DataFrame())
+    assert not any(r['category'] == 'Off-Peak Baseline' for r in recs)
