@@ -133,7 +133,7 @@ def _rule_peak_demand(metrics: dict[str, Any]) -> list[dict[str, Any]]:
     if not required.issubset(hourly.columns):
         return []
 
-    valid_hourly = hourly.dropna(subset=["average_energy_kwh"])
+    valid_hourly = _valid_hourly(hourly)
     if valid_hourly.empty:
         return []
 
@@ -166,7 +166,7 @@ def _rule_peak_demand(metrics: dict[str, Any]) -> list[dict[str, Any]]:
     )
 
     description = (
-        f"The hour(s) {hour_labels} show an average of "
+        f"The hour(s) {hour_labels} have elevated interval consumption, reaching "
         f"{highest_avg:.2f} kWh per interval — "
         f"{excess_pct}% above the dataset-wide average of "
         f"{overall_avg:.2f} kWh. "
@@ -210,7 +210,11 @@ def _rule_anomaly(anomalies: pd.DataFrame) -> list[dict[str, Any]]:
     if not required.issubset(anomalies.columns):
         return []
 
-    flagged = anomalies[anomalies["anomaly_flag"] == True].copy()  # noqa: E712
+    flagged = anomalies[anomalies["anomaly_flag"] == True].copy().reset_index(drop=True)  # noqa: E712
+    for column in ("energy_kwh", "deviation_kwh", "expected_baseline_kwh"):
+        flagged[column] = flagged[column].map(_safe_numeric)
+    flagged = flagged.dropna(subset=["energy_kwh", "deviation_kwh", "zone"])
+    flagged = flagged[flagged["energy_kwh"] >= 0]
     if flagged.empty:
         return []
 
@@ -225,7 +229,7 @@ def _rule_anomaly(anomalies: pd.DataFrame) -> list[dict[str, Any]]:
 
         if positive_devs.empty:
             max_pos_dev = None
-            worst_row = grp.iloc[0]
+            worst_row = grp.loc[grp["deviation_kwh"].abs().idxmax()]
         else:
             max_pos_dev = float(positive_devs.max())
             worst_idx = positive_devs.idxmax()
@@ -246,11 +250,11 @@ def _rule_anomaly(anomalies: pd.DataFrame) -> list[dict[str, Any]]:
         # Build description without claiming a proven cause.
         desc_parts = [
             f"Zone '{zone}' has {count} reading(s) flagged as statistically "
-            "unusual relative to prior same-hour readings for that zone."
+            "unusual relative to prior readings at the same time of day for that zone."
         ]
         if worst_ts:
             desc_parts.append(
-                f"The largest positive deviation occurred at {worst_ts}: "
+                f"The {'largest positive' if max_pos_dev is not None else 'largest absolute'} deviation occurred at {worst_ts}: "
                 f"{worst_actual:.2f} kWh actual"
                 + (
                     f" vs {worst_baseline:.2f} kWh baseline"
@@ -258,8 +262,8 @@ def _rule_anomaly(anomalies: pd.DataFrame) -> list[dict[str, Any]]:
                     else ""
                 )
                 + (
-                    f" (deviation: +{worst_dev:.2f} kWh)"
-                    if worst_dev is not None and worst_dev > 0
+                    f" (deviation: {worst_dev:+.2f} kWh)"
+                    if worst_dev is not None
                     else ""
                 )
                 + "."
@@ -285,6 +289,8 @@ def _rule_anomaly(anomalies: pd.DataFrame) -> list[dict[str, Any]]:
             evidence["worst_actual_kwh"] = round(worst_actual, 3)
         if worst_baseline is not None:
             evidence["worst_baseline_kwh"] = round(worst_baseline, 3)
+        if worst_dev is not None:
+            evidence["worst_deviation_kwh"] = round(worst_dev, 3)
         if max_pos_dev is not None:
             evidence["largest_positive_deviation_kwh"] = round(max_pos_dev, 3)
 
@@ -319,7 +325,7 @@ def _rule_off_peak_baseline(metrics: dict[str, Any]) -> list[dict[str, Any]]:
     if not required.issubset(hourly.columns):
         return []
 
-    valid_hourly = hourly.dropna(subset=["average_energy_kwh"])
+    valid_hourly = _valid_hourly(hourly)
     if valid_hourly.empty:
         return []
 
@@ -329,8 +335,8 @@ def _rule_off_peak_baseline(metrics: dict[str, Any]) -> list[dict[str, Any]]:
     if off_peak_rows.empty or daytime_rows.empty:
         return []
 
-    off_peak_avg = float(off_peak_rows["average_energy_kwh"].mean())
-    daytime_avg = float(daytime_rows["average_energy_kwh"].mean())
+    off_peak_avg = _window_average(off_peak_rows)
+    daytime_avg = _window_average(daytime_rows)
 
     if daytime_avg <= 0:
         return []
@@ -353,6 +359,8 @@ def _rule_off_peak_baseline(metrics: dict[str, Any]) -> list[dict[str, Any]]:
         "Persistent off-peak consumption may be worth investigating to understand "
         "whether it reflects expected base loads (servers, security, refrigeration) "
         "or unintended consumption. The data alone does not confirm a specific cause."
+        " These are reference clock-hour windows, not verified local tariff periods; "
+        "municipal zones may legitimately serve continuous overnight demand."
     )
 
     return [
@@ -390,7 +398,9 @@ def _rule_zone_imbalance(metrics: dict[str, Any]) -> list[dict[str, Any]]:
     if not required.issubset(zone_df.columns):
         return []
 
-    valid_zones = zone_df.dropna(subset=["average_interval_kwh"])
+    valid_zones = zone_df.copy().reset_index(drop=True)
+    valid_zones["average_interval_kwh"] = valid_zones["average_interval_kwh"].map(_safe_numeric)
+    valid_zones = valid_zones.dropna(subset=["average_interval_kwh", "zone"])
     valid_zones = valid_zones[valid_zones["average_interval_kwh"] > 0]
 
     if len(valid_zones) < 2:
@@ -517,6 +527,34 @@ def _rule_high_overall_consumption(metrics: dict[str, Any]) -> list[dict[str, An
 # Private helpers
 # ---------------------------------------------------------------------------
 
+def _valid_hourly(hourly: pd.DataFrame) -> pd.DataFrame:
+    """Keep finite, nonnegative energy and valid integer clock hours."""
+    valid = hourly.copy()
+    for column in ("hour", "average_energy_kwh"):
+        valid[column] = valid[column].map(_safe_numeric)
+    valid = valid.dropna(subset=["hour", "average_energy_kwh"])
+    return valid.loc[
+        valid["hour"].between(0, 23)
+        & (valid["hour"] % 1 == 0)
+        & (valid["average_energy_kwh"] >= 0)
+    ]
+
+
+def _window_average(rows: pd.DataFrame) -> float:
+    """Weight hour means by observation counts inferred from analytics totals.
+
+    This avoids treating a partially observed hour like a complete hour. Older
+    callers supplying only means retain the equal-hour comparison.
+    """
+    if "total_energy_kwh" in rows:
+        totals = rows["total_energy_kwh"].map(_safe_numeric)
+        means = rows["average_energy_kwh"]
+        if totals.notna().all() and (totals > 0).all() and (means > 0).all():
+            counts = totals / means
+            return float(totals.sum() / counts.sum())
+    return float(rows["average_energy_kwh"].mean())
+
+
 def _safe_dataframe(mapping: dict[str, Any], key: str) -> pd.DataFrame:
     """Return the value at *key* if it is a non-None DataFrame, else empty DF."""
     val = mapping.get(key)
@@ -527,6 +565,8 @@ def _safe_dataframe(mapping: dict[str, Any], key: str) -> pd.DataFrame:
 
 def _safe_float(mapping: dict[str, Any], key: str) -> float | None:
     """Return a finite float from *mapping[key]*, or None if absent/NaN/None."""
+    if not isinstance(mapping, dict):
+        return None
     val = mapping.get(key)
     if val is None:
         return None
