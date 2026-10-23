@@ -56,7 +56,7 @@ DAYTIME_HOURS: set[int] = {8, 9, 10, 11, 12, 13, 14, 15, 16}
 OFF_PEAK_DAYTIME_RATIO: float = 0.20
 
 # Rule 4 – Zone Imbalance
-# Minimum ratio of highest to lowest zone average to trigger the recommendation.
+# Highest/lowest zone average must be strictly greater than this ratio.
 ZONE_IMBALANCE_RATIO: float = 1.5
 
 # Rule 5 – High Overall Consumption
