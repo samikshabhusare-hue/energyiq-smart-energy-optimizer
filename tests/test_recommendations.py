@@ -1074,3 +1074,9 @@ def test_nonfinite_summary_values_are_ignored(value):
     metrics = _high_consumption_metrics()
     metrics['summary']['average_interval_kwh'] = value
     assert recommendations.generate_recommendations(metrics, pd.DataFrame()) == []
+
+
+def test_off_peak_requires_daytime_data():
+    metrics = _empty_metrics()
+    metrics['hourly'] = pd.DataFrame({'hour': [0, 1], 'average_energy_kwh': [4, 5]})
+    assert recommendations.generate_recommendations(metrics, pd.DataFrame()) == []
