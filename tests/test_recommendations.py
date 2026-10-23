@@ -1101,3 +1101,9 @@ def test_overflowing_numeric_summary_is_ignored():
     metrics = _high_consumption_metrics()
     metrics['summary']['average_interval_kwh'] = 10 ** 400
     assert recommendations.generate_recommendations(metrics, pd.DataFrame()) == []
+
+
+def test_overflowing_anomaly_value_is_ignored():
+    anomalies = _anomaly_row()
+    anomalies['energy_kwh'] = pd.Series([10 ** 400], dtype=object)
+    assert recommendations.generate_recommendations({}, anomalies) == []

@@ -583,7 +583,7 @@ def _safe_numeric(value: Any) -> float | None:
         return None
     try:
         f = float(value)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return None
     return None if (math.isnan(f) or math.isinf(f)) else f
 
