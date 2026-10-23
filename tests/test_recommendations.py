@@ -1095,3 +1095,9 @@ def test_zone_comparison_with_duplicate_indices():
     evidence = next(r['evidence'] for r in recs if r['category'] == 'Zone Imbalance')
     assert evidence['ratio'] == 4
     assert evidence['highest_zone'] == 'High Zone'
+
+
+def test_overflowing_numeric_summary_is_ignored():
+    metrics = _high_consumption_metrics()
+    metrics['summary']['average_interval_kwh'] = 10 ** 400
+    assert recommendations.generate_recommendations(metrics, pd.DataFrame()) == []
