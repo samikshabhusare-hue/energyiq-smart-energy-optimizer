@@ -2235,7 +2235,7 @@ def main() -> None:
     load_sample_clicked = st.sidebar.button(
         "⚡ Load Sample Telemetry",
         use_container_width=True,
-        help="Loads sample_energy.csv with 72 hours of hourly meter data for Block A.",
+        help="Loads the Tetouan City power consumption dataset containing 157,248 readings at 10-minute intervals from 2017.",
     )
 
     # Automatic initial load behavior: default to sample data on first launch
