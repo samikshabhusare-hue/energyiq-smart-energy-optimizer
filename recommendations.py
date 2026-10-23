@@ -22,6 +22,9 @@ Design notes
 * The function never invents values, causes, timestamps or zone names.
 * It returns [] rather than raising when inputs are empty or unusable.
 * It is a pure function: no I/O, no side effects, no external APIs.
+* Inputs must use comparable kWh measurement intervals; this module does not
+  convert units or infer interval length. Absolute thresholds need review
+  when applying the rules to meters with a different consumption scale.
 """
 
 from __future__ import annotations

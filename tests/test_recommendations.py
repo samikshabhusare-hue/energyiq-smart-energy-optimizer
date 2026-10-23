@@ -1107,3 +1107,11 @@ def test_overflowing_anomaly_value_is_ignored():
     anomalies = _anomaly_row()
     anomalies['energy_kwh'] = pd.Series([10 ** 400], dtype=object)
     assert recommendations.generate_recommendations({}, anomalies) == []
+
+
+def test_off_peak_accepts_hourly_means_without_totals():
+    metrics = _off_peak_metrics(off_peak_avg=3, daytime_avg=6)
+    metrics['hourly'] = metrics['hourly'].drop(columns='total_energy_kwh')
+    recs = recommendations.generate_recommendations(metrics, pd.DataFrame())
+    evidence = next(r['evidence'] for r in recs if r['category'] == 'Off-Peak Baseline')
+    assert evidence['off_peak_to_daytime_ratio'] == 0.5
