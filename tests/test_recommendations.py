@@ -1086,3 +1086,12 @@ def test_zero_daytime_does_not_trigger_off_peak():
     metrics = _off_peak_metrics(off_peak_avg=4, daytime_avg=0)
     recs = recommendations.generate_recommendations(metrics, pd.DataFrame())
     assert not any(r['category'] == 'Off-Peak Baseline' for r in recs)
+
+
+def test_zone_comparison_with_duplicate_indices():
+    metrics = _two_zone_metrics(high_avg=8, low_avg=2)
+    metrics['zone_comparison'].index = [0, 0]
+    recs = recommendations.generate_recommendations(metrics, pd.DataFrame())
+    evidence = next(r['evidence'] for r in recs if r['category'] == 'Zone Imbalance')
+    assert evidence['ratio'] == 4
+    assert evidence['highest_zone'] == 'High Zone'
