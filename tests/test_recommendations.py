@@ -1042,3 +1042,13 @@ def test_equal_priority_order_is_stable():
     recs = recommendations.generate_recommendations(_peak_metrics(), _anomaly_row())
     high_categories = [r['category'] for r in recs if r['priority'] == 'High']
     assert high_categories == ['Peak Demand', 'Anomaly']
+
+
+def test_anomaly_zones_are_independent():
+    anomalies = pd.concat([
+        _anomaly_row(zone='Zone 1', deviation_kwh=9),
+        _anomaly_row(zone='Zone 2', deviation_kwh=2),
+    ], ignore_index=True)
+    recs = recommendations.generate_recommendations({}, anomalies)
+    assert [(r['evidence']['zone'], r['priority']) for r in recs] == [('Zone 1', 'High'), ('Zone 2', 'Medium')]
+    assert all(r['evidence']['flagged_reading_count'] == 1 for r in recs)
