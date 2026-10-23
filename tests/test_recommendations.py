@@ -1028,3 +1028,11 @@ def test_off_peak_threshold_equality():
     metrics = _off_peak_metrics(off_peak_avg=2, daytime_avg=10)
     recs = recommendations.generate_recommendations(metrics, pd.DataFrame())
     assert not any(r['category'] == 'Off-Peak Baseline' for r in recs)
+
+
+def test_peak_hours_limited_to_top_three():
+    metrics = _peak_metrics(overall_avg=1)
+    metrics['hourly'] = pd.DataFrame({'hour': [1, 2, 3, 4], 'average_energy_kwh': [2, 3, 4, 5]})
+    recs = recommendations.generate_recommendations(metrics, pd.DataFrame())
+    evidence = next(r['evidence'] for r in recs if r['category'] == 'Peak Demand')
+    assert [row['hour'] for row in evidence['qualifying_peak_hours']] == [4, 3, 2]
