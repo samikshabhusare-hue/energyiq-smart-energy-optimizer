@@ -826,16 +826,15 @@ class TestAnomalyDescriptionLanguage:
 # Integration test – real CSV through analytics pipeline
 # ===========================================================================
 
-class TestIntegrationWithRealCSV:
+class TestIntegrationWithSyntheticCSV:
 
     @pytest.fixture(scope="class")
-    def recs_from_csv(self):
-        """Load sample_energy.csv, run the full analytics pipeline, return recs."""
+    @staticmethod
+    def recs_from_csv():
+        """Keep the intentional 18 kWh spike test on the synthetic fixture."""
         import analytics  # noqa: PLC0415
 
-        csv_path = PROJECT_ROOT / "data" / "sample_energy.csv"
-        if not csv_path.exists():
-            pytest.skip("data/sample_energy.csv not found — skipping integration test")
+        csv_path = PROJECT_ROOT / "data" / "sample_energy_synthetic.csv"
 
         df = analytics.load_and_validate_data(str(csv_path))
         metrics = analytics.calculate_metrics(df)
@@ -873,3 +872,141 @@ class TestIntegrationWithRealCSV:
         assert order_vals == sorted(order_vals), (
             f"Integration output not sorted: {[r['priority'] for r in recs_from_csv]}"
         )
+
+
+@pytest.fixture(scope="module")
+def tetouan_pipeline():
+    """Exercise all 157,248 actual ten-minute zone readings, without sampling."""
+    import analytics
+
+    df = analytics.load_and_validate_data(PROJECT_ROOT / "data" / "sample_energy.csv")
+    metrics = analytics.calculate_metrics(df)
+    anomalies = analytics.detect_anomalies(df)
+    recs = recommendations.generate_recommendations(metrics, anomalies)
+    return df, metrics, anomalies, recs
+
+
+def test_tetouan_dataset_contract(tetouan_pipeline):
+    df, _, _, _ = tetouan_pipeline
+    assert len(df) == 157248
+    assert set(df["zone"]) == {"Zone 1", "Zone 2", "Zone 3"}
+    assert df["timestamp"].min() == pd.Timestamp("2017-01-01")
+    assert df["timestamp"].max() == pd.Timestamp("2017-12-30 23:50")
+    for _, zone in df.groupby("zone"):
+        assert (zone["timestamp"].diff().dropna() == pd.Timedelta(minutes=10)).all()
+
+
+def test_tetouan_recommendations_match_analytics_evidence(tetouan_pipeline):
+    import json
+
+    _, metrics, anomalies, recs = tetouan_pipeline
+    assert recs
+    json.dumps(recs, allow_nan=False)
+    flagged = anomalies[anomalies["anomaly_flag"]]
+    anomaly_recs = [r for r in recs if r["category"] == "Anomaly"]
+    assert {r["evidence"]["zone"] for r in anomaly_recs} == set(flagged["zone"])
+    for rec in anomaly_recs:
+        evidence = rec["evidence"]
+        zone = flagged[flagged["zone"] == evidence["zone"]]
+        assert evidence["flagged_reading_count"] == len(zone)
+        selected = zone[zone["timestamp"].dt.strftime("%Y-%m-%d %H:%M") == evidence["worst_timestamp"]]
+        assert len(selected) == 1
+        assert evidence["worst_actual_kwh"] == pytest.approx(selected.iloc[0]["energy_kwh"], abs=0.001)
+    categories = {r["category"] for r in recs}
+    summary = metrics["summary"]
+    hourly = metrics["hourly"]
+    top = hourly.nlargest(recommendations.PEAK_TOP_N, "average_energy_kwh")
+    expected_peaks = top[top["average_energy_kwh"] > summary["average_interval_kwh"] * (1 + PEAK_EXCESS_RATIO)]
+    assert ("Peak Demand" in categories) == (not expected_peaks.empty)
+    if not expected_peaks.empty:
+        peak = next(r["evidence"] for r in recs if r["category"] == "Peak Demand")
+        assert [r["hour"] for r in peak["qualifying_peak_hours"]] == expected_peaks["hour"].tolist()
+    zones = metrics["zone_comparison"]
+    expected_ratio = zones["average_interval_kwh"].max() / zones["average_interval_kwh"].min()
+    assert ("Zone Imbalance" in categories) == (expected_ratio > ZONE_IMBALANCE_RATIO)
+    if expected_ratio > ZONE_IMBALANCE_RATIO:
+        imbalance = next(r["evidence"] for r in recs if r["category"] == "Zone Imbalance")
+        assert imbalance["ratio"] == pytest.approx(expected_ratio, abs=0.0001)
+    assert ("High Overall Consumption" in categories) == (
+        summary["maximum_interval_kwh"] > HIGH_CONSUMPTION_MULTIPLE * summary["average_interval_kwh"]
+    )
+    off = next(r["evidence"] for r in recs if r["category"] == "Off-Peak Baseline")
+    df = tetouan_pipeline[0]
+    assert off["off_peak_average_kwh"] == pytest.approx(
+        df.loc[df["timestamp"].dt.hour.isin(recommendations.OFF_PEAK_HOURS), "energy_kwh"].mean(), abs=0.001
+    )
+    for rec in recs:
+        assert REQUIRED_KEYS <= rec.keys()
+        assert "2026-10-22" not in rec["description"]
+    priorities = [{"High": 0, "Medium": 1, "Low": 2}[r["priority"]] for r in recs]
+    assert priorities == sorted(priorities)
+
+
+def test_negative_only_anomaly_reports_largest_drop():
+    df = pd.concat([
+        _anomaly_row(actual_kwh=7, baseline_kwh=8, deviation_kwh=-1),
+        _anomaly_row(ts="2026-10-22 13:00", actual_kwh=2, baseline_kwh=8, deviation_kwh=-6),
+    ])  # Deliberately repeated index labels.
+    rec = recommendations.generate_recommendations({}, df)[0]
+    assert rec["priority"] == "Medium"
+    assert rec["evidence"]["worst_deviation_kwh"] == -6
+    assert rec["evidence"]["worst_timestamp"] == "2026-10-22 13:00"
+    assert "largest positive deviation" not in rec["description"]
+    assert "-6.00 kWh" in rec["description"]
+
+
+def test_positive_anomalies_with_duplicate_indices():
+    df = pd.concat([_anomaly_row(deviation_kwh=2), _anomaly_row(deviation_kwh=9)])
+    rec = recommendations.generate_recommendations({}, df)[0]
+    assert rec["evidence"]["largest_positive_deviation_kwh"] == 9
+
+
+@pytest.mark.parametrize("value", [None, float("nan"), float("inf"), "invalid"])
+def test_unusable_anomaly_actual_is_ignored(value):
+    df = _anomaly_row(actual_kwh=value)
+    assert recommendations.generate_recommendations({}, df) == []
+
+
+def test_off_peak_weights_unequal_observation_counts():
+    metrics = _empty_metrics()
+    metrics["hourly"] = pd.DataFrame({
+        "hour": [0, 1, 8],
+        "average_energy_kwh": [1., 9., 10.],
+        "total_energy_kwh": [100., 9., 100.],
+    })
+    # Overnight mean is 109/101, not the equally weighted hour mean of 5.
+    assert recommendations.generate_recommendations(metrics, pd.DataFrame()) == []
+
+
+@pytest.mark.parametrize("summary", [None, [], "invalid"])
+def test_malformed_summary_does_not_crash(summary):
+    metrics = _empty_metrics()
+    metrics["summary"] = summary
+    assert recommendations.generate_recommendations(metrics, pd.DataFrame()) == []
+
+
+@pytest.mark.parametrize("hour,average", [(None, 20), (24, 20), (1.5, 20), (12, float("inf")), (12, "invalid"), (12, -20)])
+def test_invalid_hourly_evidence_is_ignored(hour, average):
+    metrics = _peak_metrics()
+    metrics["hourly"] = pd.DataFrame({"hour": [hour], "average_energy_kwh": [average]})
+    assert recommendations.generate_recommendations(metrics, pd.DataFrame()) == []
+
+
+@pytest.mark.parametrize("deviation,priority", [(5., "Medium"), (5.01, "High"), (-6., "Medium")])
+def test_anomaly_priority_boundary(deviation, priority):
+    rec = recommendations.generate_recommendations({}, _anomaly_row(deviation_kwh=deviation))[0]
+    assert rec["priority"] == priority
+
+
+def test_rules_do_not_mutate_inputs():
+    import copy
+
+    metrics = _two_zone_metrics()
+    anomalies = _anomaly_row()
+    original = copy.deepcopy(metrics)
+    original_anomalies = anomalies.copy(deep=True)
+    recommendations.generate_recommendations(metrics, anomalies)
+    for key in ("hourly", "daily", "zone_comparison"):
+        pd.testing.assert_frame_equal(metrics[key], original[key])
+    assert metrics["summary"] == original["summary"]
+    pd.testing.assert_frame_equal(anomalies, original_anomalies)
