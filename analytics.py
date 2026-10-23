@@ -7,7 +7,7 @@ is determined by the source data and is not inferred or converted by this module
 Public functions:
     load_and_validate_data(file) -> pandas.DataFrame
     calculate_metrics(df) -> dict
-    detect_anomalies(df, window=6, min_history=3, threshold_kwh=2.0) -> DataFrame
+    detect_anomalies(df, window=6, min_history=2, threshold_kwh=2.0) -> DataFrame
 
 Validation warnings are returned in ``df.attrs['data_quality_warnings']`` so that
 the expected DataFrame interface stays easy to use in Streamlit and recommendations.
@@ -54,6 +54,7 @@ def load_and_validate_data(file: Any) -> pd.DataFrame:
     raw = raw.loc[raw["timestamp"].notna()].copy()
 
     raw["energy_kwh"] = pd.to_numeric(raw["energy_kwh"], errors="coerce")
+    raw.loc[np.isinf(raw["energy_kwh"]), "energy_kwh"] = np.nan
     bad_energy = int(raw["energy_kwh"].isna().sum())
     if bad_energy:
         warnings.append(f"{bad_energy} row(s) had missing or non-numeric energy_kwh and were excluded.")
@@ -95,7 +96,13 @@ def calculate_metrics(df: pd.DataFrame) -> dict[str, Any]:
     DataFrames, ``zone_comparison`` DataFrame, and ``data_quality_warnings`` list.
     """
     _require_clean_columns(df)
-    valid = df.loc[df["timestamp"].notna() & df["energy_kwh"].notna()]
+    has_zone = "zone" in df.columns
+    valid = df.copy()
+    valid["timestamp"] = pd.to_datetime(valid["timestamp"], errors="coerce")
+    valid["energy_kwh"] = pd.to_numeric(valid["energy_kwh"], errors="coerce")
+    valid.loc[np.isinf(valid["energy_kwh"]), "energy_kwh"] = np.nan
+    valid = valid.loc[valid["timestamp"].notna() & valid["energy_kwh"].notna() & (valid["energy_kwh"] >= 0)].copy()
+
     if valid.empty:
         return {
             "summary": {"reading_count": 0, "total_energy_kwh": 0.0,
@@ -107,6 +114,9 @@ def calculate_metrics(df: pd.DataFrame) -> dict[str, Any]:
             "data_quality_warnings": list(df.attrs.get("data_quality_warnings", [])),
         }
 
+    if has_zone:
+        valid["zone"] = valid["zone"].fillna("Unknown").astype(str)
+
     peak_index = valid["energy_kwh"].idxmax()
     peak = valid.loc[peak_index]
     hourly = valid.assign(hour=valid["timestamp"].dt.hour).groupby("hour", as_index=False).agg(
@@ -115,11 +125,18 @@ def calculate_metrics(df: pd.DataFrame) -> dict[str, Any]:
     daily = valid.assign(date=valid["timestamp"].dt.date).groupby("date", as_index=False).agg(
         average_energy_kwh=("energy_kwh", "mean"), total_energy_kwh=("energy_kwh", "sum")
     )
-    zone_comparison = valid.groupby("zone", as_index=False).agg(
-        total_energy_kwh=("energy_kwh", "sum"),
-        average_interval_kwh=("energy_kwh", "mean"),
-        reading_count=("energy_kwh", "size"),
-    )
+
+    if has_zone:
+        zone_comparison = valid.groupby("zone", as_index=False).agg(
+            total_energy_kwh=("energy_kwh", "sum"),
+            average_interval_kwh=("energy_kwh", "mean"),
+            reading_count=("energy_kwh", "size"),
+        )
+        peak_zone = str(peak["zone"])
+    else:
+        zone_comparison = pd.DataFrame(columns=["zone", "total_energy_kwh", "average_interval_kwh", "reading_count"])
+        peak_zone = None
+
     return {
         "summary": {
             "reading_count": int(len(valid)),
@@ -127,7 +144,7 @@ def calculate_metrics(df: pd.DataFrame) -> dict[str, Any]:
             "average_interval_kwh": float(valid["energy_kwh"].mean()),
             "maximum_interval_kwh": float(peak["energy_kwh"]),
             "peak_timestamp": peak["timestamp"],
-            "peak_zone": str(peak["zone"]) if "zone" in peak.index else None,
+            "peak_zone": peak_zone,
         },
         "hourly": hourly,
         "daily": daily,
@@ -159,6 +176,7 @@ def detect_anomalies(
         work["zone"] = "All"
     work["timestamp"] = pd.to_datetime(work["timestamp"], errors="coerce")
     work["energy_kwh"] = pd.to_numeric(work["energy_kwh"], errors="coerce")
+    work.loc[np.isinf(work["energy_kwh"]), "energy_kwh"] = np.nan
     work = work.loc[work["timestamp"].notna() & work["energy_kwh"].notna() & (work["energy_kwh"] >= 0)].copy()
     work["zone"] = work["zone"].fillna("Unknown").astype(str)
     work = work.sort_values(["zone", "timestamp"]).reset_index(drop=True)
@@ -182,7 +200,7 @@ def detect_anomalies(
         work.loc[indices, "deviation_kwh"] = deviation.to_numpy()
         work.loc[indices, "anomaly_flag"] = flags.to_numpy()
 
-    return work[["timestamp", "zone", "energy_kwh", "expected_baseline_kwh", "deviation_kwh", "anomaly_flag"]].sort_values("timestamp").reset_index(drop=True)
+    return work[["timestamp", "zone", "energy_kwh", "expected_baseline_kwh", "deviation_kwh", "anomaly_flag"]].sort_values(["timestamp", "zone"]).reset_index(drop=True)
 
 
 def _require_clean_columns(df: pd.DataFrame) -> None:
