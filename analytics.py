@@ -159,10 +159,10 @@ def detect_anomalies(
     min_history: int = 2,
     threshold_kwh: float = 2.0,
 ) -> pd.DataFrame:
-    """Compare each reading with prior readings for the same hour and zone.
+    """Compare each reading with prior readings for the same time-of-day slot and zone.
 
-    This controls for normal daily schedules. Baselines use only preceding days,
-    never the current reading. A reading is
+    This controls for normal daily schedules. Baselines use only preceding days at
+    the matching time of day (including minutes), never the current reading. A reading is
     flagged when its absolute deviation exceeds both the robust spread threshold
     (3 × 1.4826 × rolling MAD) and ``threshold_kwh``. Rows without enough history
     receive no baseline and are not flagged. A flag means unusual versus this local
@@ -184,8 +184,8 @@ def detect_anomalies(
     work["deviation_kwh"] = np.nan
     work["anomaly_flag"] = False
 
-    work["_hour"] = work["timestamp"].dt.hour
-    for _, indices in work.groupby(["zone", "_hour"], sort=False).groups.items():
+    work["_time"] = work["timestamp"].dt.time
+    for _, indices in work.groupby(["zone", "_time"], sort=False).groups.items():
         values = work.loc[indices, "energy_kwh"].astype(float)
         prior = values.shift(1)
         rolling = prior.rolling(window=window, min_periods=min_history)
